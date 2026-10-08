@@ -1,0 +1,64 @@
+name: avito-manager
+x-app: &app
+  build: .
+  image: avito-manager:local
+  environment: &environment
+    DATABASE_HOST: db
+    DATABASE_PORT: '5432'
+    DATABASE_NAME: avito_manager
+    DATABASE_USER: avito
+    DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in local .env}
+    JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in local .env}
+    GPT_REPLIES_ENABLED: ${GPT_REPLIES_ENABLED:-false}
+    OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    OPENAI_MODEL: ${OPENAI_MODEL:-}
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: avito_manager
+      POSTGRES_USER: avito
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in local .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U avito -d avito_manager']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    command: ['python', '-m', 'alembic', 'upgrade', 'head']
+    restart: 'no'
+
+  api:
+    <<: *app
+    ports:
+      - '127.0.0.1:${API_PORT:-8001}:8000'
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  import-data:
+    <<: *app
+    profiles: ['tools']
+    volumes:
+      - ./database.db:/input/database.db:ro
+    command: ['python', '-m', 'scripts.transfer_sqlite', '--source', '/input/database.db']
+
+volumes:
+  postgres_data:
